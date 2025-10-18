@@ -138,7 +138,7 @@ app.get('/api/forge/datamanagement/bucket/create', function (req, res) {
     // We will use this bucket for storing all files in this tutorial
     Axios({
         method: 'POST',
-        url: 'https://developer.api.autodesk.com/data/v1/projects',
+        url: 'https://developer.api.autodesk.com/oss/v2/buckets',
         headers: {
             'content-type': 'application/json',
             Authorization: 'Bearer ' + access_token
@@ -216,6 +216,7 @@ app.post('/api/forge/datamanagement/bucket/upload', upload.single('fileToUpload'
             url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(req.file.originalname),
             headers: {
                 Authorization: 'Bearer ' + access_token,
+                'Content-Type': 'application/octet-stream',
                 'Content-Disposition': 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(req.file.originalname),
                 'Content-Length': filecontent.length
             },
