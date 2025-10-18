@@ -35,6 +35,9 @@
             getAccessToken: getForgeToken
         };
         var documentId = 'urn:' + getUrlParameter('urn');
+        var urn = getUrlParameter('urn');
+        var checkCount = 0;
+        var maxChecks = 60; // Maximum 5 minutes (60 * 5 seconds)
 
         // Run this when the page is loaded
         Autodesk.Viewing.Initializer(options, function onInitialized(){
@@ -44,10 +47,70 @@
                 // Create and start the viewer in that element    
                 viewer = new Autodesk.Viewing.GuiViewer3D(htmlElement);
                 viewer.start();
-                // Load the document into the viewer.
-                Autodesk.Viewing.Document.load(documentId, onDocumentLoadSuccess, onDocumentLoadFailure);
+                
+                // Check if the model derivative job is complete before loading
+                checkModelDerivativeStatus();
             }
         });
+        
+        // Check model derivative job status
+        function checkModelDerivativeStatus() {
+            if (!urn) {
+                jQuery('#MyViewerDiv').html('<p>Error: No URN provided</p>');
+                return;
+            }
+            
+            checkCount++;
+            if (checkCount > maxChecks) {
+                jQuery('#MyViewerDiv').html('<p>Model conversion is taking longer than expected. Please try refreshing the page or contact support.</p>');
+                return;
+            }
+            
+            jQuery('#MyViewerDiv').html('<p>Checking conversion status... (' + checkCount + '/' + maxChecks + ')</p>');
+            
+            jQuery.ajax({
+                url: '/api/forge/modelderivative/status/' + encodeURIComponent(urn),
+                success: function (manifest) {
+                    console.log('Manifest received:', manifest);
+                    
+                    // Check if the manifest has the required derivatives
+                    if (manifest && manifest.derivatives && manifest.derivatives.length > 0) {
+                        var hasViewable = false;
+                        for (var i = 0; i < manifest.derivatives.length; i++) {
+                            var derivative = manifest.derivatives[i];
+                            if (derivative.outputType === 'svf' && derivative.children) {
+                                hasViewable = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hasViewable) {
+                            // Model is ready, load it
+                            jQuery('#MyViewerDiv').html('<p>Loading model...</p>');
+                            Autodesk.Viewing.Document.load(documentId, onDocumentLoadSuccess, onDocumentLoadFailure);
+                        } else {
+                            // Still processing
+                            jQuery('#MyViewerDiv').html('<p>Model is still being processed. Please wait...</p>');
+                            setTimeout(checkModelDerivativeStatus, 5000); // Check again in 5 seconds
+                        }
+                    } else {
+                        // Still processing
+                        jQuery('#MyViewerDiv').html('<p>Model is still being processed. Please wait...</p>');
+                        setTimeout(checkModelDerivativeStatus, 5000); // Check again in 5 seconds
+                    }
+                },
+                error: function (xhr, status, error) {
+                    console.error('Error checking manifest:', error);
+                    if (xhr.status === 404) {
+                        // Model derivative job not found or still processing
+                        jQuery('#MyViewerDiv').html('<p>Model is still being processed. Please wait...</p>');
+                        setTimeout(checkModelDerivativeStatus, 5000); // Check again in 5 seconds
+                    } else {
+                        jQuery('#MyViewerDiv').html('<p>Error checking model status: ' + error + '</p>');
+                    }
+                }
+            });
+        }
 
         /**
         * Autodesk.Viewing.Document.load() success callback.
@@ -74,7 +137,27 @@
         */
         function onDocumentLoadFailure(viewerErrorCode) {
             console.error('onDocumentLoadFailure() - errorCode: ' + viewerErrorCode);
-            jQuery('#MyViewerDiv').html('<p>Translation in progress... Please try refreshing the page.</p>');
+            
+            // Provide more specific error messages based on error codes
+            var errorMessage = 'Failed to load model. ';
+            switch(viewerErrorCode) {
+                case 1:
+                    errorMessage += 'Invalid URN or model not found.';
+                    break;
+                case 2:
+                    errorMessage += 'Model derivative job failed or not complete.';
+                    break;
+                case 3:
+                    errorMessage += 'Model derivative job is still in progress.';
+                    break;
+                case 4:
+                    errorMessage += 'Authentication failed.';
+                    break;
+                default:
+                    errorMessage += 'Error code: ' + viewerErrorCode;
+            }
+            
+            jQuery('#MyViewerDiv').html('<p>' + errorMessage + '</p><p>Please try refreshing the page in a few moments.</p>');
         }
 
         // Get Query string from URL,

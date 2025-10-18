@@ -210,31 +210,214 @@ app.post('/api/forge/datamanagement/bucket/upload', upload.single('fileToUpload'
     }
     
     var fs = require('fs'); // Node.js File system for reading files
+    var path = require('path');
+    
     fs.readFile(req.file.path, function (err, filecontent) {
-        Axios({
-            method: 'PUT',
-            url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(req.file.originalname),
-            headers: {
-                Authorization: 'Bearer ' + access_token,
-                'Content-Type': 'application/octet-stream',
-                'Content-Disposition': 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(req.file.originalname),
-                'Content-Length': filecontent.length
-            },
-            data: filecontent,
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity
-        })
+        if (err) {
+            console.error('Error reading file:', err);
+            return res.status(500).send('Error reading uploaded file');
+        }
+        
+        var fileName = req.file.originalname;
+        var fileSize = filecontent.length;
+        
+        // For files larger than 5MB, use multipart upload
+        if (fileSize > 5 * 1024 * 1024) {
+            console.log('File size:', fileSize, 'bytes - using multipart upload');
+            
+            // Calculate number of parts (minimum 5MB per part)
+            var partSize = 10 * 1024 * 1024; // 10MB per part
+            var numParts = Math.ceil(fileSize / partSize);
+            
+            // Step 1: Get signed URLs for multipart upload
+            Axios({
+                method: 'GET',
+                url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(fileName) + '/signeds3upload?parts=' + numParts,
+                headers: {
+                    'Authorization': 'Bearer ' + access_token,
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(function (signedUrlResponse) {
+                console.log('Got signed URLs for multipart upload');
+                var uploadKey = signedUrlResponse.data.uploadKey;
+                var urls = signedUrlResponse.data.urls;
+                
+                // Step 2: Upload parts to S3
+                var uploadPromises = [];
+                for (var i = 0; i < numParts; i++) {
+                    var start = i * partSize;
+                    var end = Math.min(start + partSize, fileSize);
+                    var partData = filecontent.slice(start, end);
+                    
+                    uploadPromises.push(
+                        Axios({
+                            method: 'PUT',
+                            url: urls[i],
+                            headers: {
+                                'Content-Type': 'application/octet-stream',
+                                'Content-Length': partData.length
+                            },
+                            data: partData,
+                            maxContentLength: Infinity,
+                            maxBodyLength: Infinity
+                        })
+                    );
+                }
+                
+                return Promise.all(uploadPromises).then(function() {
+                    console.log('All parts uploaded successfully');
+                    return uploadKey;
+                });
+            })
+            .then(function (uploadKey) {
+                // Step 3: Complete the multipart upload
+                return Axios({
+                    method: 'POST',
+                    url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(fileName) + '/signeds3upload',
+                    headers: {
+                        'Authorization': 'Bearer ' + access_token,
+                        'Content-Type': 'application/json',
+                        'x-ads-meta-Content-Type': 'application/octet-stream'
+                    },
+                    data: JSON.stringify({
+                        'uploadKey': uploadKey
+                    })
+                });
+            })
             .then(function (response) {
                 // Success
-                console.log('File upload successful:', response.data);
+                console.log('Multipart upload successful:', response.data);
                 var urn = response.data.objectId.toBase64();
+                
+                // Clean up temporary file
+                fs.unlink(req.file.path, function(err) {
+                    if (err) console.error('Error deleting temp file:', err);
+                });
+                
                 res.redirect('/api/forge/modelderivative/' + urn);
             })
             .catch(function (error) {
                 // Failed
-                console.error('File upload failed:', error.response ? error.response.data : error.message);
-                res.status(500).send('Failed to create a new object in the bucket: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message));
+                console.error('Multipart upload failed:', error.response ? error.response.data : error.message);
+                
+                // Clean up temporary file
+                fs.unlink(req.file.path, function(err) {
+                    if (err) console.error('Error deleting temp file:', err);
+                });
+                
+                res.status(500).send('Failed to upload file: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message));
             });
+        } else {
+            // For smaller files, use direct upload (if still supported)
+            console.log('File size:', fileSize, 'bytes - using direct upload');
+            
+            Axios({
+                method: 'PUT',
+                url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(fileName),
+                headers: {
+                    Authorization: 'Bearer ' + access_token,
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Disposition': 'attachment; filename*=UTF-8\'\'' + encodeURIComponent(fileName),
+                    'Content-Length': fileSize
+                },
+                data: filecontent,
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            })
+            .then(function (response) {
+                // Success
+                console.log('Direct upload successful:', response.data);
+                var urn = response.data.objectId.toBase64();
+                
+                // Clean up temporary file
+                fs.unlink(req.file.path, function(err) {
+                    if (err) console.error('Error deleting temp file:', err);
+                });
+                
+                res.redirect('/api/forge/modelderivative/' + urn);
+            })
+            .catch(function (error) {
+                // If direct upload fails, try multipart upload as fallback
+                console.log('Direct upload failed, trying multipart upload as fallback');
+                
+                var partSize = 10 * 1024 * 1024;
+                var numParts = Math.ceil(fileSize / partSize);
+                
+                Axios({
+                    method: 'GET',
+                    url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(fileName) + '/signeds3upload?parts=' + numParts,
+                    headers: {
+                        'Authorization': 'Bearer ' + access_token,
+                        'Content-Type': 'application/json'
+                    }
+                })
+                .then(function (signedUrlResponse) {
+                    var uploadKey = signedUrlResponse.data.uploadKey;
+                    var urls = signedUrlResponse.data.urls;
+                    
+                    var uploadPromises = [];
+                    for (var i = 0; i < numParts; i++) {
+                        var start = i * partSize;
+                        var end = Math.min(start + partSize, fileSize);
+                        var partData = filecontent.slice(start, end);
+                        
+                        uploadPromises.push(
+                            Axios({
+                                method: 'PUT',
+                                url: urls[i],
+                                headers: {
+                                    'Content-Type': 'application/octet-stream',
+                                    'Content-Length': partData.length
+                                },
+                                data: partData,
+                                maxContentLength: Infinity,
+                                maxBodyLength: Infinity
+                            })
+                        );
+                    }
+                    
+                    return Promise.all(uploadPromises).then(function() {
+                        return uploadKey;
+                    });
+                })
+                .then(function (uploadKey) {
+                    return Axios({
+                        method: 'POST',
+                        url: 'https://developer.api.autodesk.com/oss/v2/buckets/' + encodeURIComponent(bucketKey) + '/objects/' + encodeURIComponent(fileName) + '/signeds3upload',
+                        headers: {
+                            'Authorization': 'Bearer ' + access_token,
+                            'Content-Type': 'application/json',
+                            'x-ads-meta-Content-Type': 'application/octet-stream'
+                        },
+                        data: JSON.stringify({
+                            'uploadKey': uploadKey
+                        })
+                    });
+                })
+                .then(function (response) {
+                    console.log('Fallback multipart upload successful:', response.data);
+                    var urn = response.data.objectId.toBase64();
+                    
+                    // Clean up temporary file
+                    fs.unlink(req.file.path, function(err) {
+                        if (err) console.error('Error deleting temp file:', err);
+                    });
+                    
+                    res.redirect('/api/forge/modelderivative/' + urn);
+                })
+                .catch(function (fallbackError) {
+                    console.error('Fallback multipart upload failed:', fallbackError.response ? fallbackError.response.data : fallbackError.message);
+                    
+                    // Clean up temporary file
+                    fs.unlink(req.file.path, function(err) {
+                        if (err) console.error('Error deleting temp file:', err);
+                    });
+                    
+                    res.status(500).send('Failed to upload file: ' + (fallbackError.response ? fallbackError.response.data.developerMessage || fallbackError.response.statusText : fallbackError.message));
+                });
+            });
+        }
     });
 });
 
@@ -243,6 +426,22 @@ app.get('/api/forge/modelderivative/:urn', function (req, res) {
     var urn = req.params.urn;
     var format_type = 'svf';
     var format_views = ['2d', '3d'];
+    
+    // For NWD files, we need to specify the correct input format
+    var jobData = {
+        'input': {
+            'urn': urn
+        },
+        'output': {
+            'formats': [
+                {
+                    'type': format_type,
+                    'views': format_views
+                }
+            ]
+        }
+    };
+    
     Axios({
         method: 'POST',
         url: 'https://developer.api.autodesk.com/modelderivative/v2/designdata/job',
@@ -250,28 +449,40 @@ app.get('/api/forge/modelderivative/:urn', function (req, res) {
             'content-type': 'application/json',
             Authorization: 'Bearer ' + access_token
         },
-        data: JSON.stringify({
-            'input': {
-                'urn': urn
-            },
-            'output': {
-                'formats': [
-                    {
-                        'type': format_type,
-                        'views': format_views
-                    }
-                ]
-            }
-        })
+        data: JSON.stringify(jobData)
     })
         .then(function (response) {
-            // Success
-            console.log(response);
+            // Success - job started
+            console.log('Model derivative job started:', response.data);
             res.redirect('/viewer.html?urn=' + urn);
         })
         .catch(function (error) {
             // Failed
-            console.log(error);
-            res.send('Error at Model Derivative job.');
+            console.error('Model derivative job failed:', error.response ? error.response.data : error.message);
+            res.status(500).send('Error starting Model Derivative job: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message));
+        });
+});
+
+// Route to check model derivative job status
+app.get('/api/forge/modelderivative/status/:urn', function (req, res) {
+    var urn = req.params.urn;
+    
+    Axios({
+        method: 'GET',
+        url: 'https://developer.api.autodesk.com/modelderivative/v2/designdata/' + encodeURIComponent(urn) + '/manifest',
+        headers: {
+            Authorization: 'Bearer ' + access_token
+        }
+    })
+        .then(function (response) {
+            // Success
+            res.json(response.data);
+        })
+        .catch(function (error) {
+            // Failed
+            console.error('Failed to get manifest:', error.response ? error.response.data : error.message);
+            res.status(500).json({ 
+                error: 'Failed to get manifest: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message)
+            });
         });
 });
