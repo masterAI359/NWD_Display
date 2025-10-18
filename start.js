@@ -224,17 +224,17 @@ app.post('/api/forge/datamanagement/bucket/upload', upload.single('fileToUpload'
             maxContentLength: Infinity,
             maxBodyLength: Infinity
         })
-        .then(function (response) {
-            // Success
-            console.log('File upload successful:', response.data);
-            let urn = response.data.objectId.toBase64();
-            res.redirect('/api/forge/modelderivative/' + urn);
-        })
-        .catch(function (error) {
-            // Failed
-            console.error('File upload failed:', error.response ? error.response.data : error.message);
-            res.status(500).send('Failed to create a new object in the bucket: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message));
-        });
+            .then(function (response) {
+                // Success
+                console.log('File upload successful:', response.data);
+                let urn = response.data.objectId.toBase64();
+                res.redirect('/api/forge/modelderivative/' + urn);
+            })
+            .catch(function (error) {
+                // Failed
+                console.error('File upload failed:', error.response ? error.response.data : error.message);
+                res.status(500).send('Failed to create a new object in the bucket: ' + (error.response ? error.response.data.developerMessage || error.response.statusText : error.message));
+            });
     });
 });
 
