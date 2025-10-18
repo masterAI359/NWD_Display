@@ -227,7 +227,7 @@ app.post('/api/forge/datamanagement/bucket/upload', upload.single('fileToUpload'
             .then(function (response) {
                 // Success
                 console.log('File upload successful:', response.data);
-                let urn = response.data.objectId.toBase64();
+                var urn = response.data.objectId.toBase64();
                 res.redirect('/api/forge/modelderivative/' + urn);
             })
             .catch(function (error) {
@@ -240,9 +240,9 @@ app.post('/api/forge/datamanagement/bucket/upload', upload.single('fileToUpload'
 
 // Route /api/forge/modelderivative
 app.get('/api/forge/modelderivative/:urn', function (req, res) {
-    let urn = req.params.urn;
-    let format_type = 'svf';
-    let format_views = ['2d', '3d'];
+    var urn = req.params.urn;
+    var format_type = 'svf';
+    var format_views = ['2d', '3d'];
     Axios({
         method: 'POST',
         url: 'https://developer.api.autodesk.com/modelderivative/v2/designdata/job',
